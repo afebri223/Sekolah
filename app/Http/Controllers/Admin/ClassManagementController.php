@@ -7,6 +7,8 @@ use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
 use App\Models\Classes;
 use App\Models\User;
+use App\Http\Requests\StoreClassRequest;
+use App\Http\Requests\UpdateClassRequest;
 
 class ClassManagementController extends Controller
 {
@@ -17,10 +19,10 @@ class ClassManagementController extends Controller
         // Search functionality
         if ($request->filled('search')) {
             $search = $request->search;
-            $query->where(function ($q) use ($search) {
+            $query->where(function($q) use ($search) {
                 $q->where('name', 'like', "%{$search}%")
-                    ->orWhere('grade', 'like', "%{$search}%")
-                    ->orWhere('major', 'like', "%{$search}%");
+                  ->orWhere('grade', 'like', "%{$search}%")
+                  ->orWhere('major', 'like', "%{$search}%");
             });
         }
 
@@ -34,7 +36,17 @@ class ClassManagementController extends Controller
             $query->where('major', $request->major);
         }
 
-        $classes = $query->paginate(15)->appends($request->query());
+        // Filter by wali kelas status
+        if ($request->filled('has_wali_kelas')) {
+            if ($request->has_wali_kelas == '1') {
+                $query->whereNotNull('wali_kelas_id');
+            } else {
+                $query->whereNull('wali_kelas_id');
+            }
+        }
+
+        $classes = $query->latest()->paginate(15);
+
         return view('admin.classes.index', compact('classes'));
     }
 
@@ -44,21 +56,13 @@ class ClassManagementController extends Controller
             ->where('is_wali_kelas', true)
             ->whereDoesntHave('waliKelas')
             ->get();
-
+        
         return view('admin.classes.create', compact('waliKelasOptions'));
     }
 
-    public function store(Request $request)
+    public function store(StoreClassRequest $request)
     {
-        $request->validate([
-            'name' => 'required|string|max:255|unique:classes',
-            'grade' => 'required|string|max:10',
-            'major' => 'nullable|string|max:50',
-            'wali_kelas_id' => 'nullable|exists:users,id',
-            'capacity' => 'required|integer|min:1|max:50',
-        ]);
-
-        Classes::create($request->all());
+        Classes::create($request->validated());
 
         return redirect()->route('admin.classes.index')
             ->with('success', 'Kelas berhasil ditambahkan!');
@@ -66,10 +70,10 @@ class ClassManagementController extends Controller
 
     public function show(Classes $class)
     {
-        $class->load(['waliKelas', 'students' => function ($query) {
+        $class->load(['waliKelas', 'students' => function($query) {
             $query->where('status', 'active');
         }]);
-
+        
         return view('admin.classes.show', compact('class'));
     }
 
@@ -77,26 +81,18 @@ class ClassManagementController extends Controller
     {
         $waliKelasOptions = User::where('role', 'guru')
             ->where('is_wali_kelas', true)
-            ->where(function ($query) use ($class) {
+            ->where(function($query) use ($class) {
                 $query->whereDoesntHave('waliKelas')
-                    ->orWhere('id', $class->wali_kelas_id);
+                      ->orWhere('id', $class->wali_kelas_id);
             })
             ->get();
-
+        
         return view('admin.classes.edit', compact('class', 'waliKelasOptions'));
     }
 
-    public function update(Request $request, Classes $class)
+    public function update(UpdateClassRequest $request, Classes $class)
     {
-        $request->validate([
-            'name' => 'required|string|max:255|unique:classes,name,' . $class->id,
-            'grade' => 'required|string|max:10',
-            'major' => 'nullable|string|max:50',
-            'wali_kelas_id' => 'nullable|exists:users,id',
-            'capacity' => 'required|integer|min:1|max:50',
-        ]);
-
-        $class->update($request->all());
+        $class->update($request->validated());
 
         return redirect()->route('admin.classes.index')
             ->with('success', 'Kelas berhasil diperbarui!');
@@ -104,7 +100,6 @@ class ClassManagementController extends Controller
 
     public function destroy(Classes $class)
     {
-        // Check if class has active students
         if ($class->students()->where('status', 'active')->count() > 0) {
             return redirect()->route('admin.classes.index')
                 ->with('error', 'Kelas tidak dapat dihapus karena masih memiliki siswa aktif!');

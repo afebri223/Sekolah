@@ -16,7 +16,7 @@ class AttendanceReportController extends Controller
     {
         $query = Attendance::with(['student', 'class', 'recordedBy']);
 
-        // Filter by date range
+        // Date range filter
         if ($request->filled('start_date')) {
             $query->whereDate('date', '>=', $request->start_date);
         }
@@ -24,26 +24,36 @@ class AttendanceReportController extends Controller
             $query->whereDate('date', '<=', $request->end_date);
         }
 
-        // Filter by class
+        // Class filter
         if ($request->filled('class_id')) {
             $query->where('class_id', $request->class_id);
         }
 
-        // Filter by status
+        // Status filter
         if ($request->filled('status')) {
             $query->where('status', $request->status);
         }
 
+        // Student search
+        if ($request->filled('search')) {
+            $search = $request->search;
+            $query->whereHas('student', function($q) use ($search) {
+                $q->where('name', 'like', "%{$search}%")
+                  ->orWhere('nis', 'like', "%{$search}%");
+            });
+        }
+
         $attendances = $query->latest('date')->paginate(20);
-        $classes = Classes::all();
+        $classes = Classes::orderBy('name')->get();
 
         // Statistics
+        $statsQuery = clone $query;
         $stats = [
-            'total_records' => $query->count(),
-            'hadir' => $query->clone()->where('status', 'hadir')->count(),
-            'izin' => $query->clone()->where('status', 'izin')->count(),
-            'sakit' => $query->clone()->where('status', 'sakit')->count(),
-            'alpha' => $query->clone()->where('status', 'alpha')->count(),
+            'total_records' => $statsQuery->count(),
+            'hadir' => $statsQuery->where('status', 'hadir')->count(),
+            'izin' => $statsQuery->where('status', 'izin')->count(),
+            'sakit' => $statsQuery->where('status', 'sakit')->count(),
+            'alpha' => $statsQuery->where('status', 'alpha')->count(),
         ];
 
         return view('admin.reports.attendance', compact('attendances', 'classes', 'stats'));
@@ -51,10 +61,8 @@ class AttendanceReportController extends Controller
 
     public function export(Request $request)
     {
-        // Implementation for exporting attendance data to Excel/PDF
-        // This would require additional export libraries
-        
-        return response()->download($pathToFile);
+        // Implementasi export bisa ditambahkan nanti
+        return response()->json(['message' => 'Export feature coming soon']);
     }
 
     public function summary(Request $request)
@@ -88,6 +96,8 @@ class AttendanceReportController extends Controller
                     'sakit' => $attendances->where('status', 'sakit')->count(),
                     'alpha' => $attendances->where('status', 'alpha')->count(),
                     'total_days' => $attendances->count(),
+                    'attendance_rate' => $attendances->count() > 0 ? 
+                        round(($attendances->where('status', 'hadir')->count() / $attendances->count()) * 100, 1) : 0
                 ];
             }
 
@@ -95,5 +105,45 @@ class AttendanceReportController extends Controller
         }
 
         return view('admin.reports.summary', compact('summary', 'month', 'year'));
+    }
+
+    public function dailyReport(Request $request)
+    {
+        $date = $request->get('date', today()->format('Y-m-d'));
+        
+        $classes = Classes::with(['students' => function($query) {
+            $query->where('status', 'active');
+        }])->get();
+
+        $dailyData = [];
+        
+        foreach ($classes as $class) {
+            $attendances = Attendance::where('class_id', $class->id)
+                ->whereDate('date', $date)
+                ->with('student')
+                ->get()
+                ->keyBy('student_id');
+
+            $classStats = [
+                'class' => $class,
+                'total_students' => $class->students->count(),
+                'attended' => $attendances->where('status', 'hadir')->count(),
+                'absent' => $class->students->count() - $attendances->count(),
+                'students' => []
+            ];
+
+            foreach ($class->students as $student) {
+                $attendance = $attendances->get($student->id);
+                $classStats['students'][] = [
+                    'student' => $student,
+                    'status' => $attendance ? $attendance->status : 'belum_absen',
+                    'notes' => $attendance ? $attendance->notes : null
+                ];
+            }
+
+            $dailyData[] = $classStats;
+        }
+
+        return view('admin.reports.daily', compact('dailyData', 'date'));
     }
 }
